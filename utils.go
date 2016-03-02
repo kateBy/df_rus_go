@@ -9,8 +9,8 @@ import (
 )
 
 func loadString(fileName string) map[string]string {
-	//Функция загружает строки из po-файла в виде словаря
-	//Возможны глюки, т.к. все довольно линейно и топорно
+	/*Функция загружает строки из po-файла в виде словаря
+	Возможны глюки, т.к. все довольно линейно и топорно*/
 
 	buf, err := ioutil.ReadFile(fileName)
 	if err != nil {
@@ -55,6 +55,8 @@ func checkString(byte_string []byte) string {
 	return string(byte_string)
 }
 
+/* Извлечение hardcoded строк из исполняемого файла,
+   все, что похоже на строки */
 func extractStrings(fileName string) map[string]uint64 { 
 
 	elfFile, err := elf.Open(fileName)
@@ -71,7 +73,7 @@ func extractStrings(fileName string) map[string]uint64 {
 	var next_zero int = 0
 	var checked string
 	var i uint64
-	result := make(map[string]uint64)
+	result := make(map[string]uint64) //Словарь {слово:виртуальный_адрес}
 	
 	for i = 0; i < data_length; {
 		if data[i] > 31 && data[i] < 127 {
@@ -89,4 +91,26 @@ func extractStrings(fileName string) map[string]uint64 {
 
 	return result
 
+}
+
+/* Функция поиска строк-близнецов путём отрезания начала слов и сравнивания со словарём перевода*/
+func findGemini(hStrings map[string]uint64, transStrings map[string]string) map[string]uint64 {
+	result := make(map[string]uint64)
+
+	var i uint64
+
+	for hStr := range hStrings {
+		max_len := uint64(len(hStr) - 1)
+		for i = 1; i < max_len; i++ {
+			if v, ok := transStrings[hStr[i:]]; ok { //Проверяем, есть ли уменьшенная строка в переводах
+			    _ = v //UNUSED
+				if v, ok := hStrings[hStr[i:]]; !ok { //Проверяем, нет ли уже такой строки в hardcoded строках
+					_ = v //UNUSED
+					result[hStr[i:]] = hStrings[hStr] + i
+				}
+			}
+		}
+	}
+
+	return result
 }
