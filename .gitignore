@@ -1,4 +1,5 @@
 rebuild_cache_GO
 Dwarf_Fortress
+*.txt
 *.po
 *.mo

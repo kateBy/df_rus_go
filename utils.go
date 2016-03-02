@@ -1,16 +1,20 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
+	"debug/elf"
+	"encoding/binary"
 	"fmt"
 	"io/ioutil"
+	"os"
+	"runtime"
 	"strings"
-	"debug/elf"
-	"bytes"
 )
 
+/* Функция загружает строки из po-файла в виде словаря
+   Возможны глюки, т.к. все довольно линейно и топорно*/
 func loadString(fileName string) map[string]string {
-	/*Функция загружает строки из po-файла в виде словаря
-	Возможны глюки, т.к. все довольно линейно и топорно*/
 
 	buf, err := ioutil.ReadFile(fileName)
 	if err != nil {
@@ -46,6 +50,7 @@ func loadString(fileName string) map[string]string {
 	return result
 }
 
+/* Проверка строк на валидные символы*/
 func checkString(byte_string []byte) string {
 	for i := 0; i < len(byte_string); i++ {
 		if byte_string[i] < 32 || byte_string[i] > 126 {
@@ -57,7 +62,7 @@ func checkString(byte_string []byte) string {
 
 /* Извлечение hardcoded строк из исполняемого файла,
    все, что похоже на строки */
-func extractStrings(fileName string) map[string]uint64 { 
+func extractStrings(fileName string) map[string]uint32 {
 
 	elfFile, err := elf.Open(fileName)
 	if err != nil {
@@ -66,25 +71,25 @@ func extractStrings(fileName string) map[string]uint64 {
 	defer elfFile.Close()
 
 	rodata := elfFile.Section(".rodata")
-	vaddr := rodata.Addr //Виртуальный адрес начала секции
+	vaddr := uint32(rodata.Addr) //Виртуальный адрес начала секции
 
 	data, err := rodata.Data()
-	data_length := uint64(len(data))
+	data_length := uint32(len(data))
 	var next_zero int = 0
 	var checked string
-	var i uint64
-	result := make(map[string]uint64) //Словарь {слово:виртуальный_адрес}
-	
+	var i uint32
+	result := make(map[string]uint32) //Словарь {слово:виртуальный_адрес}
+
 	for i = 0; i < data_length; {
 		if data[i] > 31 && data[i] < 127 {
 			next_zero = bytes.IndexByte(data[i:], 0)
 			if next_zero != -1 && next_zero > 2 {
-				checked = checkString(data[i:i+uint64(next_zero)])
+				checked = checkString(data[i : i+uint32(next_zero)])
 				if checked != "" {
 					result[checked] = i + vaddr
 				}
-				i = uint64(next_zero) + i //Т.к. next_zero - относится к срезу data[i:]
-			} 
+				i = uint32(next_zero) + i //Т.к. next_zero - относится к срезу data[i:]
+			}
 		}
 		i++
 	}
@@ -94,23 +99,96 @@ func extractStrings(fileName string) map[string]uint64 {
 }
 
 /* Функция поиска строк-близнецов путём отрезания начала слов и сравнивания со словарём перевода*/
-func findGemini(hStrings map[string]uint64, transStrings map[string]string) map[string]uint64 {
-	result := make(map[string]uint64)
+func findGemini(hStrings map[string]uint32, transStrings map[string]string) map[string]uint32 {
+	result := make(map[string]uint32)
 
-	var i uint64
+	var i uint32
 
 	for hStr := range hStrings {
-		max_len := uint64(len(hStr) - 1)
+		max_len := uint32(len(hStr) - 2)
 		for i = 1; i < max_len; i++ {
-			if v, ok := transStrings[hStr[i:]]; ok { //Проверяем, есть ли уменьшенная строка в переводах
-			    _ = v //UNUSED
-				if v, ok := hStrings[hStr[i:]]; !ok { //Проверяем, нет ли уже такой строки в hardcoded строках
-					_ = v //UNUSED
+			if _, ok := transStrings[hStr[i:]]; ok { //Проверяем, есть ли уменьшенная строка в переводах
+				if _, ok := hStrings[hStr[i:]]; !ok { //Проверяем, нет ли уже такой строки в hardcoded строках
 					result[hStr[i:]] = hStrings[hStr] + i
 				}
 			}
 		}
 	}
+
+	return result
+}
+
+func goCheck(job chan string, out chan map[string]uint32, gemini map[string]uint32, buf []byte) {
+	var link_byte int
+	result := make(map[string]uint32)
+	bs := make([]byte, 4)
+
+	for {
+		if j, more := <-job; more {
+			binary.LittleEndian.PutUint32(bs, gemini[j])
+			link_byte = bytes.Index(buf, bs)
+
+			if link_byte != -1 {
+				result[j] = binary.LittleEndian.Uint32(buf[link_byte : link_byte+4])
+			}
+
+		} else {
+			out <- result
+			return
+		}
+
+	}
+
+}
+
+/* Функция проверки того, что найденные строки-"близнецы" есть в вызовах строк */
+func checkGemini(df_filename string, gemini map[string]uint32) map[string]uint32 {
+	result := make(map[string]uint32)
+	runtime.GOMAXPROCS(runtime.NumCPU())
+
+	elfFile, err := elf.Open(df_filename)
+	if err != nil {
+		fmt.Println("Ошибка при открытии", df_filename)
+	}
+	defer elfFile.Close()
+
+	code := elfFile.Section(".text")
+	buf, _ := code.Data()
+
+	procs := runtime.NumCPU()
+
+	job := make(chan string)
+	out := make(chan map[string]uint32, procs)
+
+	
+	for i := 0; i < procs; i++ {
+		go goCheck(job, out, gemini, buf)
+	}
+
+	for j := range gemini {
+		job <- j
+	}
+
+	close(job) //Обязательно!, иначе DEAD LOCK
+
+	var results []map[string]uint32
+
+	for i := 0; i < procs; i++ {
+		results = append(results, <-out)
+	}
+
+	file, _ := os.Create("gemini_cache.txt")
+	writer := bufio.NewWriter(file)
+	
+	for i:=0; i < len(results); i++ {
+		for res := range results[i] {
+			writer.WriteString(fmt.Sprintf("%s<*|*>%d\n", res, results[i][res]))
+			result[res] = results[i][res]
+		}
+	}
+	
+	writer.Flush()
+	file.Close()
 
 	return result
 }
