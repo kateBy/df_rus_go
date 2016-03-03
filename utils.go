@@ -99,17 +99,17 @@ func extractStrings(fileName string) map[string]uint32 {
 }
 
 /* Функция поиска строк-близнецов путём отрезания начала слов и сравнивания со словарём перевода*/
-func findGemini(hStrings map[string]uint32, transStrings map[string]string) map[string]uint32 {
+func findGemini(hStrings *map[string]uint32, transStrings *map[string]string) map[string]uint32 {
 	result := make(map[string]uint32)
 
 	var i uint32
 
-	for hStr := range hStrings {
+	for hStr := range *hStrings {
 		max_len := uint32(len(hStr) - 2)
 		for i = 1; i < max_len; i++ {
-			if _, ok := transStrings[hStr[i:]]; ok { //Проверяем, есть ли уменьшенная строка в переводах
-				if _, ok := hStrings[hStr[i:]]; !ok { //Проверяем, нет ли уже такой строки в hardcoded строках
-					result[hStr[i:]] = hStrings[hStr] + i
+			if _, ok := (*transStrings)[hStr[i:]]; ok { //Проверяем, есть ли уменьшенная строка в переводах
+				if _, ok := (*hStrings)[hStr[i:]]; !ok { //Проверяем, нет ли уже такой строки в hardcoded строках
+					result[hStr[i:]] = (*hStrings)[hStr] + i
 				}
 			}
 		}
@@ -118,18 +118,18 @@ func findGemini(hStrings map[string]uint32, transStrings map[string]string) map[
 	return result
 }
 
-func goCheck(job chan string, out chan map[string]uint32, gemini map[string]uint32, buf []byte) {
+func goCheck(job chan string, out chan map[string]uint32, gemini *map[string]uint32, buf *[]byte) {
 	var link_byte int
 	result := make(map[string]uint32)
 	bs := make([]byte, 4)
 
 	for {
 		if j, more := <-job; more {
-			binary.LittleEndian.PutUint32(bs, gemini[j])
-			link_byte = bytes.Index(buf, bs)
+			binary.LittleEndian.PutUint32(bs, (*gemini)[j])
+			link_byte = bytes.Index(*buf, bs)
 
 			if link_byte != -1 {
-				result[j] = binary.LittleEndian.Uint32(buf[link_byte : link_byte+4])
+				result[j] = binary.LittleEndian.Uint32((*buf)[link_byte : link_byte+4])
 			}
 
 		} else {
@@ -157,12 +157,11 @@ func checkGemini(df_filename string, gemini map[string]uint32) map[string]uint32
 
 	procs := runtime.NumCPU()
 
-	job := make(chan string) //Канал передачи заданий на обработку
+	job := make(chan string)            //Канал передачи заданий на обработку
 	out := make(chan map[string]uint32) //Канал получения результатов
 
-	
 	for i := 0; i < procs; i++ {
-		go goCheck(job, out, gemini, buf)
+		go goCheck(job, out, &gemini, &buf)
 	}
 
 	for j := range gemini {
@@ -179,55 +178,57 @@ func checkGemini(df_filename string, gemini map[string]uint32) map[string]uint32
 
 	file, _ := os.Create("gemini_cache.txt")
 	writer := bufio.NewWriter(file)
-	
-	for i:=0; i < len(results); i++ {
+
+	for i := 0; i < len(results); i++ {
 		for res := range results[i] {
 			writer.WriteString(fmt.Sprintf("%s[*|*]%d\n", res, results[i][res]))
 			result[res] = results[i][res] //Объединяем результаты работы потоков
 		}
 	}
-	
+
 	writer.Flush()
 	file.Close()
 
 	return result
 }
 
-/*Поиск всех включений */
-func findAllUInt32(buf []byte, ref uint32, vaddr uint32) []uint32 {
-	var result []uint32
+/* Асинхронный поиск всех включений указателей на строки в исполняемом файле*/
+func goFindXRef(job chan string, out chan map[string][]uint32, buf *[]byte, words *map[string]uint32, vaddr uint32) {
+	result := make(map[string][]uint32)
 	target := make([]byte, 4)
-	binary.LittleEndian.PutUint32(target, ref)
 	var found int
 	var lastFound int
 
 	for {
-		found = bytes.Index(buf[lastFound:], target)
-		if found != -1 {
-			result = append(result, uint32(found + lastFound) + vaddr)
-			lastFound = found + lastFound + 5
+		if j, more := <-job; more {
+			lastFound = 0
+			found = 0
+			var res []uint32
+
+			binary.LittleEndian.PutUint32(target, (*words)[j])
+			//Цикл поиска в коде
+			for found != -1 {
+				found = bytes.Index((*buf)[lastFound:], target)
+				if found != -1 {
+					res = append(res, uint32(found+lastFound)+vaddr)
+					lastFound = found + lastFound + 5
+				}
+			} //--Цикл поиска в коде
+
+			if len(res) != 0 {
+				result[j] = res
+			}
+
 		} else {
-			break
-		}
-	}
-
-	return result
-	
-}
-
-func goFindXRef(job chan string, out map[string][]uint32, buf []byte, vaddr uint32){
-	result := make(map[string][]uint32)
-	
-	for {
-		if j, more := <- job; more {
-			
+			out <- result
+			return
 		}
 	}
 }
 
-func findXRef(df_filename string, words map[string]uint32) map[string][]uint32{
+func findXRef(df_filename string, words *map[string]uint32) map[string][]uint32 {
 	result := make(map[string][]uint32)
-	
+
 	elfFile, _ := elf.Open(df_filename)
 
 	defer elfFile.Close()
@@ -235,20 +236,41 @@ func findXRef(df_filename string, words map[string]uint32) map[string][]uint32{
 	rodata := elfFile.Section(".text")
 	vaddr := uint32(rodata.Addr) //Виртуальный адрес начала секции
 
-	data, _ := rodata.Data()
-	
-	i := 0
-	for w := range words {
-		if i % 100 == 0{
-			fmt.Println(i)
-		}
-		if res := findAllUInt32(data, words[w], vaddr); len(res) != 0{
-			result[w] = res
-		}
-		
-		i++
-		 
+	buf, _ := rodata.Data()
+
+	job := make(chan string)              //Задания
+	out := make(chan map[string][]uint32) //Результаты работы потоков
+
+	runtime.GOMAXPROCS(runtime.NumCPU())
+
+	procs := runtime.NumCPU()
+
+	for i := 0; i < procs; i++ {
+		go goFindXRef(job, out, &buf, words, vaddr)
 	}
-	
+
+	for j := range *words {
+		job <- j
+	}
+
+	close(job) //Важно! DEADLOCK
+
+	var results []map[string][]uint32
+
+	//Собираем результаты
+	for i := 0; i < procs; i++ {
+		results = append(results, <-out)
+	}
+
+	file, _ := os.Create("cache.txt")
+	writer := bufio.NewWriter(file)
+
+	for i := 0; i < len(results); i++ {
+		for res := range results[i] {
+			writer.WriteString(fmt.Sprintf("%s[*|*]%d\n", res, len(results[i][res])))
+			result[res] = results[i][res] //Объединяем результаты работы потоков
+		}
+	}
+
 	return result
 }

@@ -17,21 +17,20 @@ func main() {
 	fmt.Println(len(hardcodedStrings), "строк загружено")
 
 	fmt.Print("Поиск строк-близнецов ... ")
-	gemini := findGemini(hardcodedStrings, translation)
+	gemini := findGemini(&hardcodedStrings, &translation)
 	fmt.Println(len(gemini), "строк-близнецов найдено")
-	
-	fmt.Print("Отсев строк-близнецов ... ")
-	start := time.Now()
-	chk := checkGemini(DF_FILENAME, gemini)
-	finish := time.Now()	
-	fmt.Println(len(chk), "за", finish.Sub(start))
-	
+
+	//	fmt.Print("Отсев строк-близнецов ... ")
+	//	start := time.Now()
+	//	chk := checkGemini(DF_FILENAME, gemini)
+	//	finish := time.Now()
+	//	fmt.Println(len(chk), "за", finish.Sub(start))
+
 	//FIXME Объединить chk и hardcodedStrings
-	fmt.Println("Поиск перекрестных ссылок в коде ... ")
-	xref := findXRef(DF_FILENAME, hardcodedStrings)
-	fmt.Println(len(xref))
-	
+	start := time.Now()
+	fmt.Print("Поиск перекрестных ссылок в коде ... ")
+	xref := findXRef(DF_FILENAME, &hardcodedStrings)
+	finish := time.Now()
+	fmt.Println(len(xref), "за", finish.Sub(start))
 
 }
-
-
