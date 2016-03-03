@@ -215,6 +215,16 @@ func findAllUInt32(buf []byte, ref uint32, vaddr uint32) []uint32 {
 	
 }
 
+func goFindXRef(job chan string, out map[string][]uint32, buf []byte, vaddr uint32){
+	result := make(map[string][]uint32)
+	
+	for {
+		if j, more := <- job; more {
+			
+		}
+	}
+}
+
 func findXRef(df_filename string, words map[string]uint32) map[string][]uint32{
 	result := make(map[string][]uint32)
 	
@@ -226,9 +236,18 @@ func findXRef(df_filename string, words map[string]uint32) map[string][]uint32{
 	vaddr := uint32(rodata.Addr) //Виртуальный адрес начала секции
 
 	data, _ := rodata.Data()
-
+	
+	i := 0
 	for w := range words {
-		result[w] = findAllUInt32(data, words[w], vaddr)
+		if i % 100 == 0{
+			fmt.Println(i)
+		}
+		if res := findAllUInt32(data, words[w], vaddr); len(res) != 0{
+			result[w] = res
+		}
+		
+		i++
+		 
 	}
 	
 	return result
