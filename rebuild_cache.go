@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"time"
+	_ "time"
 )
 
 const DF_FILENAME = "Dwarf_Fortress"
@@ -20,11 +20,17 @@ func main() {
 	gemini := findGemini(hardcodedStrings, translation)
 	fmt.Println(len(gemini), "строк-близнецов найдено")
 	
-	fmt.Print("Отсев строк-близнецов ... ")
+	/*fmt.Print("Отсев строк-близнецов ... ")
 	start := time.Now()
 	chk := checkGemini(DF_FILENAME, gemini)
 	finish := time.Now()	
-	fmt.Println(len(chk), "за", finish.Sub(start))
+	fmt.Println(len(chk), "за", finish.Sub(start))*/
+	
+	//FIXME Объединить chk и hardcodedStrings
+	fmt.Println("Поиск перекрестных ссылок в коде ... ")
+	xref := findXRef(DF_FILENAME, hardcodedStrings)
+	fmt.Println(len(xref))
+	
 
 }
 

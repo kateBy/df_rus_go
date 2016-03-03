@@ -157,8 +157,8 @@ func checkGemini(df_filename string, gemini map[string]uint32) map[string]uint32
 
 	procs := runtime.NumCPU()
 
-	job := make(chan string)
-	out := make(chan map[string]uint32, procs)
+	job := make(chan string) //Канал передачи заданий на обработку
+	out := make(chan map[string]uint32) //Канал получения результатов
 
 	
 	for i := 0; i < procs; i++ {
@@ -182,13 +182,54 @@ func checkGemini(df_filename string, gemini map[string]uint32) map[string]uint32
 	
 	for i:=0; i < len(results); i++ {
 		for res := range results[i] {
-			writer.WriteString(fmt.Sprintf("%s<*|*>%d\n", res, results[i][res]))
-			result[res] = results[i][res]
+			writer.WriteString(fmt.Sprintf("%s[*|*]%d\n", res, results[i][res]))
+			result[res] = results[i][res] //Объединяем результаты работы потоков
 		}
 	}
 	
 	writer.Flush()
 	file.Close()
 
+	return result
+}
+
+/*Поиск всех включений */
+func findAllUInt32(buf []byte, ref uint32, vaddr uint32) []uint32 {
+	var result []uint32
+	target := make([]byte, 4)
+	binary.LittleEndian.PutUint32(target, ref)
+	var found int
+	var lastFound int
+
+	for {
+		found = bytes.Index(buf[lastFound:], target)
+		if found != -1 {
+			result = append(result, uint32(found + lastFound) + vaddr)
+			lastFound = found + lastFound + 5
+		} else {
+			break
+		}
+	}
+
+	return result
+	
+}
+
+func findXRef(df_filename string, words map[string]uint32) map[string][]uint32{
+	result := make(map[string][]uint32)
+	
+	elfFile, _ := elf.Open(df_filename)
+
+	defer elfFile.Close()
+
+	rodata := elfFile.Section(".text")
+	vaddr := uint32(rodata.Addr) //Виртуальный адрес начала секции
+
+	data, _ := rodata.Data()
+
+	for w := range words {
+		result[w] = findAllUInt32(data, words[w], vaddr)
+	}
+	
 	return result
 }
