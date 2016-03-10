@@ -20,17 +20,20 @@ func main() {
 	gemini := findGemini(&hardcodedStrings, &translation)
 	fmt.Println(len(gemini), "строк-близнецов найдено")
 
-	//	fmt.Print("Отсев строк-близнецов ... ")
-	//	start := time.Now()
-	//	chk := checkGemini(DF_FILENAME, gemini)
-	//	finish := time.Now()
-	//	fmt.Println(len(chk), "за", finish.Sub(start))
-
-	//FIXME Объединить chk и hardcodedStrings
+	fmt.Print("Отсев строк-близнецов ... ")
 	start := time.Now()
+	chk := checkGemini(DF_FILENAME, gemini)
+	finish := time.Now()
+	fmt.Println(len(chk), "за", finish.Sub(start))
+	
+	for k, v := range chk {
+		hardcodedStrings[k] = v
+	}
+
+	start = time.Now()
 	fmt.Print("Поиск перекрестных ссылок в коде ... ")
 	xref := findXRef(DF_FILENAME, &hardcodedStrings)
-	finish := time.Now()
+	finish = time.Now()
 	fmt.Println(len(xref), "за", finish.Sub(start))
 
 }

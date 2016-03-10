@@ -12,6 +12,15 @@ import (
 	"strings"
 )
 
+const (
+	SIZE_UINT32 = 4
+	NOT_FOUND   = -1
+	CACHE_TXT = "cache.txt"
+	GEMINI_CACHE_TXT = "gemini_cache.txt"
+	SECTION_RODATA = ".rodata"
+	SECTION_TEXT = ".text"
+)
+
 /* Функция загружает строки из po-файла в виде словаря
    Возможны глюки, т.к. все довольно линейно и топорно*/
 func loadString(fileName string) map[string]string {
@@ -52,8 +61,9 @@ func loadString(fileName string) map[string]string {
 
 /* Проверка строк на валидные символы*/
 func checkString(byte_string []byte) string {
+	const SQUARE_COMMONS = 91 //Код символа [
 	for i := 0; i < len(byte_string); i++ {
-		if byte_string[i] < 32 || byte_string[i] > 126 {
+		if byte_string[i] < 32 || byte_string[i] > 126 || byte_string[0] == SQUARE_COMMONS {
 			return ""
 		}
 	}
@@ -70,7 +80,7 @@ func extractStrings(fileName string) map[string]uint32 {
 	}
 	defer elfFile.Close()
 
-	rodata := elfFile.Section(".rodata")
+	rodata := elfFile.Section(SECTION_RODATA)
 	vaddr := uint32(rodata.Addr) //Виртуальный адрес начала секции
 
 	data, err := rodata.Data()
@@ -83,7 +93,7 @@ func extractStrings(fileName string) map[string]uint32 {
 	for i = 0; i < data_length; {
 		if data[i] > 31 && data[i] < 127 {
 			next_zero = bytes.IndexByte(data[i:], 0)
-			if next_zero != -1 && next_zero > 2 {
+			if next_zero != NOT_FOUND && next_zero > 2 {
 				checked = checkString(data[i : i+uint32(next_zero)])
 				if checked != "" {
 					result[checked] = i + vaddr
@@ -121,15 +131,15 @@ func findGemini(hStrings *map[string]uint32, transStrings *map[string]string) ma
 func goCheck(job chan string, out chan map[string]uint32, gemini *map[string]uint32, buf *[]byte) {
 	var link_byte int
 	result := make(map[string]uint32)
-	bs := make([]byte, 4)
+	bs := make([]byte, SIZE_UINT32)
 
 	for {
 		if j, more := <-job; more {
 			binary.LittleEndian.PutUint32(bs, (*gemini)[j])
 			link_byte = bytes.Index(*buf, bs)
 
-			if link_byte != -1 {
-				result[j] = binary.LittleEndian.Uint32((*buf)[link_byte : link_byte+4])
+			if link_byte != NOT_FOUND {
+				result[j] = binary.LittleEndian.Uint32((*buf)[link_byte : link_byte+SIZE_UINT32])
 			}
 
 		} else {
@@ -152,7 +162,7 @@ func checkGemini(df_filename string, gemini map[string]uint32) map[string]uint32
 	}
 	defer elfFile.Close()
 
-	code := elfFile.Section(".text")
+	code := elfFile.Section(SECTION_TEXT)
 	buf, _ := code.Data()
 
 	procs := runtime.NumCPU()
@@ -176,7 +186,7 @@ func checkGemini(df_filename string, gemini map[string]uint32) map[string]uint32
 		results = append(results, <-out)
 	}
 
-	file, _ := os.Create("gemini_cache.txt")
+	file, _ := os.Create(GEMINI_CACHE_TXT)
 	writer := bufio.NewWriter(file)
 
 	for i := 0; i < len(results); i++ {
@@ -193,25 +203,26 @@ func checkGemini(df_filename string, gemini map[string]uint32) map[string]uint32
 }
 
 /* Асинхронный поиск всех включений указателей на строки в исполняемом файле*/
-func goFindXRef(job chan string, out chan map[string][]uint32, buf *[]byte, words *map[string]uint32, vaddr uint32) {
+func goFindXRef(job chan string, out chan map[string][]uint32, buf *[]byte, words *map[string]uint32) {
 	result := make(map[string][]uint32)
-	target := make([]byte, 4)
+	target := make([]byte, SIZE_UINT32)
 	var found int
 	var lastFound int
+	var res []uint32
 
 	for {
 		if j, more := <-job; more {
 			lastFound = 0
 			found = 0
-			var res []uint32
+			res = nil
 
 			binary.LittleEndian.PutUint32(target, (*words)[j])
 			//Цикл поиска в коде
-			for found != -1 {
+			for found != NOT_FOUND {
 				found = bytes.Index((*buf)[lastFound:], target)
-				if found != -1 {
-					res = append(res, uint32(found+lastFound)+vaddr)
-					lastFound = found + lastFound + 5
+				if found != NOT_FOUND {
+					res = append(res, uint32(found+lastFound)) //+vaddr)
+					lastFound = found + lastFound + SIZE_UINT32
 				}
 			} //--Цикл поиска в коде
 
@@ -226,27 +237,25 @@ func goFindXRef(job chan string, out chan map[string][]uint32, buf *[]byte, word
 	}
 }
 
+/* Поиск перекрестных ссылок */
 func findXRef(df_filename string, words *map[string]uint32) map[string][]uint32 {
-	result := make(map[string][]uint32)
 
 	elfFile, _ := elf.Open(df_filename)
 
-	defer elfFile.Close()
-
-	rodata := elfFile.Section(".text")
-	vaddr := uint32(rodata.Addr) //Виртуальный адрес начала секции
+	rodata := elfFile.Section(SECTION_TEXT)
+	//vaddr := uint32(rodata.Addr) //Виртуальный адрес начала секции
 
 	buf, _ := rodata.Data()
+	elfFile.Close()
 
 	job := make(chan string)              //Задания
 	out := make(chan map[string][]uint32) //Результаты работы потоков
 
-	runtime.GOMAXPROCS(runtime.NumCPU())
-
 	procs := runtime.NumCPU()
+	runtime.GOMAXPROCS(procs)
 
 	for i := 0; i < procs; i++ {
-		go goFindXRef(job, out, &buf, words, vaddr)
+		go goFindXRef(job, out, &buf, words)
 	}
 
 	for j := range *words {
@@ -262,15 +271,55 @@ func findXRef(df_filename string, words *map[string]uint32) map[string][]uint32 
 		results = append(results, <-out)
 	}
 
-	file, _ := os.Create("cache.txt")
+	file, _ := os.Create(CACHE_TXT)
 	writer := bufio.NewWriter(file)
+	result := make(map[string][]uint32)
 
 	for i := 0; i < len(results); i++ {
 		for res := range results[i] {
-			writer.WriteString(fmt.Sprintf("%s[*|*]%d\n", res, len(results[i][res])))
+			writer.WriteString(fmt.Sprintf("%s<%v>\n", res, results[i][res]))
 			result[res] = results[i][res] //Объединяем результаты работы потоков
 		}
 	}
+
+	writer.Flush()
+	file.Close()
+
+	//Байты, которые должны идти перед указателем на строку, все остальные, кроме mov esp - мусор
+	GOOD_BITS := []byte{0xb8, //mov eax, offset
+	                    0xb9, //mov ecx, offset
+						0xba, //mov edx, offset
+						0xbb, //mov ebx, offset
+						0xbd, //mov ebp, offset
+						0xbe, //mov esi, offset
+						0xbf} //mov edi, offset  
+
+	const ESP byte = 0xc7
+	
+	bug_addr := make(map[uint32]bool)
+	var bit byte
+	
+	fmt.Println(len(result))
+
+	for word := range result {
+		for _, offset := range result[word] {
+			bit = buf[offset]
+			if bytes.IndexByte(GOOD_BITS, bit) != NOT_FOUND {
+				if buf[offset-4] != ESP {      //Проверяем может быть это mov dword ptr esp
+					if buf[offset-3] != ESP {  //Проверяем может быть это mov  word ptr esp
+						//bug_addr = append(bug_addr, offset)
+						bug_addr[offset] = true
+					}
+				}
+			}
+		}
+	}
+	
+	
+	
+	
+
+	//fmt.Println("BUGS:", len(bug_addr))
 
 	return result
 }
