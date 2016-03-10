@@ -13,13 +13,22 @@ import (
 )
 
 const (
-	SIZE_UINT32 = 4
-	NOT_FOUND   = -1
-	CACHE_TXT = "cache.txt"
+	SIZE_UINT32      = 4
+	NOT_FOUND        = -1
+	CACHE_TXT        = "cache.txt"
 	GEMINI_CACHE_TXT = "gemini_cache.txt"
-	SECTION_RODATA = ".rodata"
-	SECTION_TEXT = ".text"
+	SECTION_RODATA   = ".rodata"
+	SECTION_TEXT     = ".text"
 )
+
+//Байты, которые должны идти перед указателем на строку, все остальные, кроме mov esp - мусор
+var GOOD_BITS = []byte{0xb8, //mov eax, offset
+	                   0xb9, //mov ecx, offset
+	                   0xba, //mov edx, offset
+	                   0xbb, //mov ebx, offset
+	                   0xbd, //mov ebp, offset
+	                   0xbe, //mov esi, offset
+	                   0xbf} //mov edi, offset
 
 /* Функция загружает строки из po-файла в виде словаря
    Возможны глюки, т.к. все довольно линейно и топорно*/
@@ -203,7 +212,7 @@ func checkGemini(df_filename string, gemini map[string]uint32) map[string]uint32
 }
 
 /* Асинхронный поиск всех включений указателей на строки в исполняемом файле*/
-func goFindXRef(job chan string, out chan map[string][]uint32, buf *[]byte, words *map[string]uint32) {
+func goFindXRef(job chan string, out chan map[string][]uint32, buf *[]byte, words *map[string]uint32, section_offset uint32) {
 	result := make(map[string][]uint32)
 	target := make([]byte, SIZE_UINT32)
 	var found int
@@ -242,10 +251,11 @@ func findXRef(df_filename string, words *map[string]uint32) map[string][]uint32 
 
 	elfFile, _ := elf.Open(df_filename)
 
-	rodata := elfFile.Section(SECTION_TEXT)
+	section_text := elfFile.Section(SECTION_TEXT)
 	//vaddr := uint32(rodata.Addr) //Виртуальный адрес начала секции
+	section_offset := uint32(section_text.Offset)
 
-	buf, _ := rodata.Data()
+	buf, _ := section_text.Data()
 	elfFile.Close()
 
 	job := make(chan string)              //Задания
@@ -255,7 +265,7 @@ func findXRef(df_filename string, words *map[string]uint32) map[string][]uint32 
 	runtime.GOMAXPROCS(procs)
 
 	for i := 0; i < procs; i++ {
-		go goFindXRef(job, out, &buf, words)
+		go goFindXRef(job, out, &buf, words, section_offset)
 	}
 
 	for j := range *words {
@@ -285,28 +295,19 @@ func findXRef(df_filename string, words *map[string]uint32) map[string][]uint32 
 	writer.Flush()
 	file.Close()
 
-	//Байты, которые должны идти перед указателем на строку, все остальные, кроме mov esp - мусор
-	GOOD_BITS := []byte{0xb8, //mov eax, offset
-	                    0xb9, //mov ecx, offset
-						0xba, //mov edx, offset
-						0xbb, //mov ebx, offset
-						0xbd, //mov ebp, offset
-						0xbe, //mov esi, offset
-						0xbf} //mov edi, offset  
-
 	const ESP byte = 0xc7
-	
+
 	bug_addr := make(map[uint32]bool)
 	var bit byte
-	
+
 	fmt.Println(len(result))
 
 	for word := range result {
 		for _, offset := range result[word] {
 			bit = buf[offset]
 			if bytes.IndexByte(GOOD_BITS, bit) != NOT_FOUND {
-				if buf[offset-4] != ESP {      //Проверяем может быть это mov dword ptr esp
-					if buf[offset-3] != ESP {  //Проверяем может быть это mov  word ptr esp
+				if buf[offset-4] != ESP { //Проверяем может быть это mov dword ptr esp
+					if buf[offset-3] != ESP { //Проверяем может быть это mov  word ptr esp
 						//bug_addr = append(bug_addr, offset)
 						bug_addr[offset] = true
 					}
@@ -314,10 +315,6 @@ func findXRef(df_filename string, words *map[string]uint32) map[string][]uint32 
 			}
 		}
 	}
-	
-	
-	
-	
 
 	//fmt.Println("BUGS:", len(bug_addr))
 
