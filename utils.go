@@ -19,16 +19,17 @@ const (
 	GEMINI_CACHE_TXT = "gemini_cache.txt"
 	SECTION_RODATA   = ".rodata"
 	SECTION_TEXT     = ".text"
+	ESP byte = 0xc7
 )
 
 //Байты, которые должны идти перед указателем на строку, все остальные, кроме mov esp - мусор
 var GOOD_BITS = []byte{0xb8, //mov eax, offset
-	                   0xb9, //mov ecx, offset
-	                   0xba, //mov edx, offset
-	                   0xbb, //mov ebx, offset
-	                   0xbd, //mov ebp, offset
-	                   0xbe, //mov esi, offset
-	                   0xbf} //mov edi, offset
+	0xb9, //mov ecx, offset
+	0xba, //mov edx, offset
+	0xbb, //mov ebx, offset
+	0xbd, //mov ebp, offset
+	0xbe, //mov esi, offset
+	0xbf} //mov edi, offset
 
 /* Функция загружает строки из po-файла в виде словаря
    Возможны глюки, т.к. все довольно линейно и топорно*/
@@ -230,7 +231,24 @@ func goFindXRef(job chan string, out chan map[string][]uint32, buf *[]byte, word
 			for found != NOT_FOUND {
 				found = bytes.Index((*buf)[lastFound:], target)
 				if found != NOT_FOUND {
-					res = append(res, uint32(found+lastFound)) //+vaddr)
+					offset := found+lastFound
+					if bytes.IndexByte(GOOD_BITS, (*buf)[offset]) != NOT_FOUND {
+						res = append(res, uint32(found+lastFound)+section_offset)
+						
+					} else {
+						if (*buf)[offset-4] != ESP { //Проверяем может быть это mov dword ptr esp
+							res = append(res, uint32(found+lastFound)+section_offset)
+						} else {
+							if (*buf)[offset-3] != ESP { //Проверяем может быть это mov  word ptr esp
+								res = append(res, uint32(found+lastFound)+section_offset)
+							} else {
+								//bug_addr = append(bug_addr, offset)
+								//bug_addr[offset] = true
+								fmt.Println(j, offset)
+							}
+						}
+					}
+
 					lastFound = found + lastFound + SIZE_UINT32
 				}
 			} //--Цикл поиска в коде
@@ -295,28 +313,9 @@ func findXRef(df_filename string, words *map[string]uint32) map[string][]uint32 
 	writer.Flush()
 	file.Close()
 
-	const ESP byte = 0xc7
+	
 
-	bug_addr := make(map[uint32]bool)
-	var bit byte
 
-	fmt.Println(len(result))
-
-	for word := range result {
-		for _, offset := range result[word] {
-			bit = buf[offset]
-			if bytes.IndexByte(GOOD_BITS, bit) != NOT_FOUND {
-				if buf[offset-4] != ESP { //Проверяем может быть это mov dword ptr esp
-					if buf[offset-3] != ESP { //Проверяем может быть это mov  word ptr esp
-						//bug_addr = append(bug_addr, offset)
-						bug_addr[offset] = true
-					}
-				}
-			}
-		}
-	}
-
-	//fmt.Println("BUGS:", len(bug_addr))
 
 	return result
 }
