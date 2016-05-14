@@ -13,17 +13,18 @@ import (
 )
 
 const (
-	SIZE_UINT32      = 4
-	NOT_FOUND        = -1
-	CACHE_TXT        = "cache.txt"
-	GEMINI_CACHE_TXT = "gemini_cache.txt"
-	SECTION_RODATA   = ".rodata"
-	SECTION_TEXT     = ".text"
-	ESP byte = 0xc7
+	SIZE_UINT32           = 4
+	NOT_FOUND             = -1
+	CACHE_TXT             = "cache.txt"
+	GEMINI_CACHE_TXT      = "gemini_cache.txt"
+	SECTION_RODATA        = ".rodata"
+	SECTION_TEXT          = ".text"
+	ESP              byte = 0xc7
 )
 
 //Байты, которые должны идти перед указателем на строку, все остальные, кроме mov esp - мусор
-var GOOD_BITS = []byte{0xb8, //mov eax, offset
+var GOOD_BITS = []byte{
+    0xb8, //mov eax, offset
 	0xb9, //mov ecx, offset
 	0xba, //mov edx, offset
 	0xbb, //mov ebx, offset
@@ -38,6 +39,7 @@ func loadString(fileName string) map[string]string {
 	buf, err := ioutil.ReadFile(fileName)
 	if err != nil {
 		fmt.Println("Ошибка при открытии файла", fileName)
+		panic("")
 	}
 
 	lines := strings.Split(string(buf), "\n")
@@ -93,7 +95,7 @@ func extractStrings(fileName string) map[string]uint32 {
 	rodata := elfFile.Section(SECTION_RODATA)
 	vaddr := uint32(rodata.Addr) //Виртуальный адрес начала секции
 
-	data, err := rodata.Data()
+	data, _ := rodata.Data()
 	data_length := uint32(len(data))
 	var next_zero int = 0
 	var checked string
@@ -120,7 +122,7 @@ func extractStrings(fileName string) map[string]uint32 {
 
 /* Функция поиска строк-близнецов путём отрезания начала слов и сравнивания со словарём перевода*/
 func findGemini(hStrings *map[string]uint32, transStrings *map[string]string) map[string]uint32 {
-	result := make(map[string]uint32)
+	result := make(map[string]uint32) //Искомый словарь в виде [строка:вирт.адрес]
 
 	var i uint32
 
@@ -138,18 +140,20 @@ func findGemini(hStrings *map[string]uint32, transStrings *map[string]string) ma
 	return result
 }
 
+/*Функция асинхронной проверки наличия вызова адреса из исполняемого файла*/
 func goCheck(job chan string, out chan map[string]uint32, gemini *map[string]uint32, buf *[]byte) {
 	var link_byte int
 	result := make(map[string]uint32)
-	bs := make([]byte, SIZE_UINT32)
+	bs := make([]byte, SIZE_UINT32) //Промежуточный буфер для little-endian байт адресов
 
 	for {
 		if j, more := <-job; more {
-			binary.LittleEndian.PutUint32(bs, (*gemini)[j])
-			link_byte = bytes.Index(*buf, bs)
+			binary.LittleEndian.PutUint32(bs, (*gemini)[j]) //Преобразуем адрес в little-endian байты
+			link_byte = bytes.Index(*buf, bs) //Ищем в секции нужные байты
 
 			if link_byte != NOT_FOUND {
-				result[j] = binary.LittleEndian.Uint32((*buf)[link_byte : link_byte+SIZE_UINT32])
+				//Сохраняем проверенный адрес строки 
+				result[j] = (*gemini)[j]
 			}
 
 		} else {
@@ -231,16 +235,16 @@ func goFindXRef(job chan string, out chan map[string][]uint32, buf *[]byte, word
 			for found != NOT_FOUND {
 				found = bytes.Index((*buf)[lastFound:], target)
 				if found != NOT_FOUND {
-					offset := found+lastFound
+					offset := found + lastFound
 					if bytes.IndexByte(GOOD_BITS, (*buf)[offset]) != NOT_FOUND {
-						res = append(res, uint32(found+lastFound)+section_offset)
-						
+						res = append(res, uint32(found+lastFound))
+
 					} else {
 						if (*buf)[offset-4] != ESP { //Проверяем может быть это mov dword ptr esp
-							res = append(res, uint32(found+lastFound)+section_offset)
+							res = append(res, uint32(found+lastFound))
 						} else {
 							if (*buf)[offset-3] != ESP { //Проверяем может быть это mov  word ptr esp
-								res = append(res, uint32(found+lastFound)+section_offset)
+								res = append(res, uint32(found+lastFound))
 							} else {
 								//bug_addr = append(bug_addr, offset)
 								//bug_addr[offset] = true
@@ -312,10 +316,6 @@ func findXRef(df_filename string, words *map[string]uint32) map[string][]uint32 
 
 	writer.Flush()
 	file.Close()
-
-	
-
-
 
 	return result
 }
